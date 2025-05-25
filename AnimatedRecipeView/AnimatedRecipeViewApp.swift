@@ -935,18 +935,14 @@ struct AnimatedRecipeWrapper: View {
 
 #Preview("📱 iPhone Portrait") {
     AnimatedRecipeWrapper()
-        .previewDevice("iPhone 15 Pro")
 }
 
 #Preview("📱 iPhone Landscape") {
     AnimatedRecipeWrapper()
-        .previewDevice("iPhone 15 Pro")
-        .previewInterfaceOrientation(.landscapeLeft)
 }
 
 #Preview("📱 iPad Portrait") {
     AnimatedRecipeWrapper()
-        .previewDevice("iPad Pro (11-inch)")
 }
 
 // MARK: - App Entry Point
