@@ -1,3 +1,5 @@
+// 2) add a SF Symbol icon toggle botton to the app header to fadeIn/Out the flowbars thats  only enabled in side-by-side mode
+
 ////
 ////  DataPipelinePlayground.swift
 ////  AnimatedRecipeView
