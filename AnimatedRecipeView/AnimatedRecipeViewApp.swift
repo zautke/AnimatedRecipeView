@@ -6,30 +6,25 @@ internal import Combine
 class AnimationConfig: ObservableObject {
     
     // Layout Transition Animation
-    @Published var layoutResponse: Double = 0.8
-    @Published var layoutDamping: Double = 0.7
+    @Published var layoutResponse: Double = 1.2
+    @Published var layoutDamping: Double = 1.0
     @Published var layoutBlendDuration: Double = 0.3
     
     // Content Compression Animation
-    @Published var compressionResponse: Double = 0.6
-    @Published var compressionDamping: Double = 0.8
+    @Published var compressionResponse: Double = 0.8
+    @Published var compressionDamping: Double = 1.0
     @Published var compressionBlendDuration: Double = 0.2
     
     // Manual Toggle Animation
-    @Published var toggleResponse: Double = 0.8
-    @Published var toggleDamping: Double = 0.7
+    @Published var toggleResponse: Double = 1.0
+    @Published var toggleDamping: Double = 1.0
     @Published var toggleBlendDuration: Double = 0.3
-    
-    // Springback Animation (end of transition)
-    @Published var springbackResponse: Double = 0.4
-    @Published var springbackDamping: Double = 0.6
-    @Published var springbackDelay: Double = 0.1
     
     // Animation timing controls
     @Published var animationDelay: Double = 0.0
     @Published var staggerDelay: Double = 0.05
     
-    // Computed animations
+    // Computed animations (smooth, no overshoot)
     var layoutAnimation: Animation {
         .spring(response: layoutResponse, dampingFraction: layoutDamping, blendDuration: layoutBlendDuration)
     }
@@ -42,28 +37,20 @@ class AnimationConfig: ObservableObject {
         .spring(response: toggleResponse, dampingFraction: toggleDamping, blendDuration: toggleBlendDuration)
     }
     
-    var springbackAnimation: Animation {
-        .spring(response: springbackResponse, dampingFraction: springbackDamping)
-            .delay(springbackDelay)
-    }
-    
-    // Preset configurations
+    // Preset configurations (all without springback)
     func loadBouncy() {
-        layoutResponse = 0.6; layoutDamping = 0.5
-        compressionResponse = 0.4; compressionDamping = 0.6
-        springbackResponse = 0.3; springbackDamping = 0.4
+        layoutResponse = 0.8; layoutDamping = 0.9
+        compressionResponse = 0.6; compressionDamping = 0.9
     }
     
     func loadSmooth() {
-        layoutResponse = 1.0; layoutDamping = 0.9
-        compressionResponse = 0.8; compressionDamping = 0.95
-        springbackResponse = 0.6; springbackDamping = 0.8
+        layoutResponse = 1.4; layoutDamping = 1.0
+        compressionResponse = 1.0; compressionDamping = 1.0
     }
     
     func loadSnappy() {
-        layoutResponse = 0.4; layoutDamping = 0.8
-        compressionResponse = 0.3; compressionDamping = 0.85
-        springbackResponse = 0.2; springbackDamping = 0.7
+        layoutResponse = 0.6; layoutDamping = 1.0
+        compressionResponse = 0.4; compressionDamping = 1.0
     }
 }
 
@@ -214,37 +201,28 @@ class LayoutManager: ObservableObject {
         let shouldUseHorizontal = orientationManager.isLandscape
         let shouldUseCompact = !orientationManager.isLandscape
         
-        isAnimating = true
-        
         withAnimation(animationConfig.layoutAnimation) {
             useHorizontalLayout = shouldUseHorizontal
-        }
-        
-        withAnimation(animationConfig.compressionAnimation) {
             useCompactLayout = shouldUseCompact
+            isAnimating = true
         }
         
-        // Springback effect at the end
-        DispatchQueue.main.asyncAfter(deadline: .now() + animationConfig.layoutResponse) {
-            withAnimation(self.animationConfig.springbackAnimation) {
-                self.isAnimating = false
-            }
+        // Reset animation state after animation completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + animationConfig.layoutResponse + 0.1) {
+            self.isAnimating = false
         }
     }
     
     func toggleManualLayout() {
-        isAnimating = true
-        
         withAnimation(animationConfig.toggleAnimation) {
             useHorizontalLayout.toggle()
             useCompactLayout.toggle()
+            isAnimating = true
         }
         
-        // Springback effect
-        DispatchQueue.main.asyncAfter(deadline: .now() + animationConfig.toggleResponse) {
-            withAnimation(self.animationConfig.springbackAnimation) {
-                self.isAnimating = false
-            }
+        // Reset animation state after animation completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + animationConfig.toggleResponse + 0.1) {
+            self.isAnimating = false
         }
     }
 }
@@ -288,10 +266,8 @@ struct AnimatedLayoutWrapper<Content: View>: View {
         layout {
             content()
         }
-        .scaleEffect(isAnimating ? 1.02 : 1.0) // Subtle springback scale
         .animation(animationConfig.layoutAnimation, value: useHorizontalLayout)
         .animation(animationConfig.compressionAnimation, value: useCompactLayout)
-        .animation(animationConfig.springbackAnimation, value: isAnimating)
     }
     
     private var verticalAlignment: VerticalAlignment {
@@ -674,15 +650,6 @@ struct AnimationControlsPanel: View {
                 }
             }
             
-            // Springback Animation (Key feature)
-            GroupBox("🌸 Springback Effect") {
-                VStack(spacing: 8) {
-                    SliderControl(value: $animationConfig.springbackResponse, range: 0.1...1.0, label: "Response", format: "%.2f")
-                    SliderControl(value: $animationConfig.springbackDamping, range: 0.1...1.0, label: "Damping", format: "%.2f")
-                    SliderControl(value: $animationConfig.springbackDelay, range: 0.0...0.5, label: "Delay", format: "%.2f")
-                }
-            }
-            
             // Compression Animation
             GroupBox("Content Compression") {
                 VStack(spacing: 8) {
@@ -814,6 +781,7 @@ struct InteractivePrototypeView: View {
                 }
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle()) // Force stack style for proper iPad behavior
         .onChange(of: horizontalSizeClass) { _, newValue in
             layoutManager.updateLayout(horizontalSizeClass: newValue)
         }
@@ -916,6 +884,7 @@ struct AnimatedRecipeWrapper: View {
                 }
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle()) // Force stack style for proper iPad behavior
         .onChange(of: horizontalSizeClass) { _, newValue in
             layoutManager.updateLayout(horizontalSizeClass: newValue)
         }
