@@ -69,6 +69,95 @@ struct Instruction: Identifiable, Hashable {
     let duration: String?
 }
 
+// MARK: - Connection Analysis
+struct IngredientConnection {
+    let ingredientIndex: Int
+    let instructionIndex: Int
+    let confidence: Float // 0.0 to 1.0
+}
+
+class ConnectionAnalyzer {
+    static func analyzeConnections(ingredients: [Ingredient], instructions: [Instruction]) -> [IngredientConnection] {
+        var connections: [IngredientConnection] = []
+        
+        for (instructionIndex, instruction) in instructions.enumerated() {
+            let instructionText = instruction.description.lowercased()
+            
+            for (ingredientIndex, ingredient) in ingredients.enumerated() {
+                let confidence = calculateConfidence(
+                    ingredientName: ingredient.name.lowercased(),
+                    instructionText: instructionText,
+                    instructionStep: instruction.step
+                )
+                
+                if confidence > 0.3 { // Threshold for connection
+                    connections.append(IngredientConnection(
+                        ingredientIndex: ingredientIndex,
+                        instructionIndex: instructionIndex,
+                        confidence: confidence
+                    ))
+                }
+            }
+        }
+        
+        return connections
+    }
+    
+    private static func calculateConfidence(ingredientName: String, instructionText: String, instructionStep: Int) -> Float {
+        var confidence: Float = 0.0
+        
+        // Extract key words from ingredient name
+        let ingredientWords = ingredientName.components(separatedBy: [" ", ",", "(", ")"]).filter { !$0.isEmpty }
+        
+        for word in ingredientWords {
+            if word.count > 3 { // Skip very short words
+                if instructionText.contains(word) {
+                    confidence += 0.4
+                }
+                
+                // Check for partial matches
+                if instructionText.contains(String(word.prefix(word.count - 1))) {
+                    confidence += 0.2
+                }
+            }
+        }
+        
+        // Special handling for common cooking terms
+        let cookingTerms = [
+            ("flour", ["mix", "combine", "add", "sift"]),
+            ("butter", ["cream", "beat", "mix", "melt"]),
+            ("sugar", ["cream", "beat", "mix", "add"]),
+            ("eggs", ["beat", "add", "mix"]),
+            ("chocolate", ["fold", "add", "melt", "chips"]),
+            ("vanilla", ["add", "mix"]),
+            ("salt", ["add", "mix", "combine"]),
+            ("baking soda", ["mix", "combine", "add"])
+        ]
+        
+        for (ingredient, terms) in cookingTerms {
+            if ingredientName.contains(ingredient) {
+                for term in terms {
+                    if instructionText.contains(term) {
+                        confidence += 0.3
+                    }
+                }
+            }
+        }
+        
+        // Early steps more likely to use dry ingredients
+        if instructionStep <= 3 && (ingredientName.contains("flour") || ingredientName.contains("salt") || ingredientName.contains("baking")) {
+            confidence += 0.2
+        }
+        
+        // Later steps more likely to use chocolate chips, final assembly
+        if instructionStep >= 6 && ingredientName.contains("chocolate") {
+            confidence += 0.3
+        }
+        
+        return min(confidence, 1.0)
+    }
+}
+
 struct Recipe {
     let title: String
     let ingredients: [Ingredient]
@@ -227,7 +316,7 @@ class LayoutManager: ObservableObject {
     }
 }
 
-// MARK: - Animated Layout Wrapper
+// MARK: - Enhanced Layout Wrapper with Flow Connectors
 struct AnimatedLayoutWrapper<Content: View>: View {
     let useHorizontalLayout: Bool
     let useCompactLayout: Bool
@@ -236,7 +325,12 @@ struct AnimatedLayoutWrapper<Content: View>: View {
     let spacing: CGFloat
     let alignment: Alignment
     let animationConfig: AnimationConfig
+    let recipe: Recipe
     @ViewBuilder let content: () -> Content
+    
+    @State private var ingredientPositions: [Int: CGRect] = [:]
+    @State private var instructionPositions: [Int: CGRect] = [:]
+    @State private var connections: [IngredientConnection] = []
     
     init(
         useHorizontalLayout: Bool,
@@ -244,6 +338,7 @@ struct AnimatedLayoutWrapper<Content: View>: View {
         isAnimating: Bool,
         deviceType: DeviceManager.DeviceType,
         animationConfig: AnimationConfig,
+        recipe: Recipe,
         spacing: CGFloat = 20,
         alignment: Alignment = .center,
         @ViewBuilder content: @escaping () -> Content
@@ -253,6 +348,7 @@ struct AnimatedLayoutWrapper<Content: View>: View {
         self.isAnimating = isAnimating
         self.deviceType = deviceType
         self.animationConfig = animationConfig
+        self.recipe = recipe
         self.spacing = spacing
         self.alignment = alignment
         self.content = content
@@ -263,11 +359,48 @@ struct AnimatedLayoutWrapper<Content: View>: View {
             ? AnyLayout(HStackLayout(alignment: verticalAlignment, spacing: spacing))
             : AnyLayout(VStackLayout(alignment: horizontalAlignment, spacing: spacing))
         
-        layout {
-            content()
+        ZStack {
+            layout {
+                content()
+            }
+            .coordinateSpace(name: "ConnectionSpace")
+            .onPreferenceChange(IngredientPositionPreferenceKey.self) { positions in
+                ingredientPositions = positions
+            }
+            .onPreferenceChange(InstructionPositionPreferenceKey.self) { positions in
+                instructionPositions = positions
+            }
+            
+            // Flow connectors - only show in horizontal layout and when not compact
+            if useHorizontalLayout && !useCompactLayout {
+                FlowConnector(
+                    connections: connections,
+                    ingredientPositions: ingredientPositions,
+                    instructionPositions: instructionPositions,
+                    useCompactLayout: useCompactLayout,
+                    animationConfig: animationConfig
+                )
+                .opacity(isAnimating ? 0.3 : 1.0)
+            }
         }
         .animation(animationConfig.layoutAnimation, value: useHorizontalLayout)
         .animation(animationConfig.compressionAnimation, value: useCompactLayout)
+        .onAppear {
+            analyzeConnections()
+        }
+        .onChange(of: useHorizontalLayout) { _, _ in
+            // Re-analyze when layout changes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                analyzeConnections()
+            }
+        }
+    }
+    
+    private func analyzeConnections() {
+        connections = ConnectionAnalyzer.analyzeConnections(
+            ingredients: recipe.ingredients,
+            instructions: recipe.instructions
+        )
     }
     
     private var verticalAlignment: VerticalAlignment {
@@ -326,6 +459,7 @@ struct IngredientsSection: View {
     let useCompactLayout: Bool
     let deviceType: DeviceManager.DeviceType
     let animationConfig: AnimationConfig
+    let showConnectors: Bool
     
     private var fontSize: Font {
         switch deviceType {
@@ -343,7 +477,7 @@ struct IngredientsSection: View {
     }
     
     private var columns: [GridItem] {
-        if useCompactLayout {
+        if useCompactLayout || !showConnectors {
             return [
                 GridItem(.flexible(), spacing: 8),
                 GridItem(.flexible(), spacing: 8)
@@ -368,7 +502,8 @@ struct IngredientsSection: View {
                         ingredient: ingredient,
                         fontSize: fontSize,
                         useCompactLayout: useCompactLayout,
-                        animationConfig: animationConfig
+                        animationConfig: animationConfig,
+                        index: index
                     )
                     .animation(
                         animationConfig.compressionAnimation.delay(Double(index) * animationConfig.staggerDelay),
@@ -396,6 +531,7 @@ struct InstructionsSection: View {
     let useCompactLayout: Bool
     let deviceType: DeviceManager.DeviceType
     let animationConfig: AnimationConfig
+    let showConnectors: Bool
     
     private var fontSize: Font {
         switch deviceType {
@@ -413,7 +549,7 @@ struct InstructionsSection: View {
     }
     
     private var columns: [GridItem] {
-        if useCompactLayout {
+        if useCompactLayout || !showConnectors {
             return [
                 GridItem(.flexible(), spacing: 8),
                 GridItem(.flexible(), spacing: 8)
@@ -438,7 +574,8 @@ struct InstructionsSection: View {
                         instruction: instruction,
                         fontSize: fontSize,
                         useCompactLayout: useCompactLayout,
-                        animationConfig: animationConfig
+                        animationConfig: animationConfig,
+                        index: index
                     )
                     .animation(
                         animationConfig.compressionAnimation.delay(Double(index) * animationConfig.staggerDelay),
@@ -467,6 +604,7 @@ struct IngredientRow: View {
     let fontSize: Font
     let useCompactLayout: Bool
     let animationConfig: AnimationConfig
+    let index: Int
     
     var body: some View {
         HStack(spacing: 0) {
@@ -487,6 +625,12 @@ struct IngredientRow: View {
         .padding(.vertical, useCompactLayout ? 2 : 6)
         .contentShape(Rectangle())
         .animation(animationConfig.compressionAnimation, value: useCompactLayout)
+        .background(
+            GeometryReader { geometry in
+                Color.clear.preference(key: IngredientPositionPreferenceKey.self,
+                                     value: [index: geometry.frame(in: .named("ConnectionSpace"))])
+            }
+        )
     }
 }
 
@@ -495,6 +639,7 @@ struct InstructionRow: View {
     let fontSize: Font
     let useCompactLayout: Bool
     let animationConfig: AnimationConfig
+    let index: Int
     
     var body: some View {
         HStack(alignment: .top, spacing: useCompactLayout ? 6 : 12) {
@@ -504,7 +649,7 @@ struct InstructionRow: View {
                 .fontDesign(.rounded)
                 .foregroundColor(.white)
                 .frame(width: useCompactLayout ? 18 : 24, height: useCompactLayout ? 18 : 24)
-                .background(Circle().fill(Color.blue))
+                .background(Circle().fill(instructionColor(for: instruction.step)))
             
             VStack(alignment: .leading, spacing: useCompactLayout ? 2 : 4) {
                 Text(instruction.description)
@@ -528,6 +673,110 @@ struct InstructionRow: View {
         .padding(.vertical, useCompactLayout ? 2 : 6)
         .contentShape(Rectangle())
         .animation(animationConfig.compressionAnimation, value: useCompactLayout)
+        .background(
+            GeometryReader { geometry in
+                Color.clear.preference(key: InstructionPositionPreferenceKey.self,
+                                     value: [index: geometry.frame(in: .named("ConnectionSpace"))])
+            }
+        )
+    }
+    
+    private func instructionColor(for step: Int) -> Color {
+        let colors: [Color] = [.blue, .purple, .green, .orange, .red, .cyan, .mint, .pink, .indigo, .teal]
+        return colors[(step - 1) % colors.count]
+    }
+}
+
+// MARK: - Preference Keys for Positioning
+struct IngredientPositionPreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] = [:]
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+struct InstructionPositionPreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] = [:]
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+// MARK: - Flow Connector Component
+struct FlowConnector: View {
+    let connections: [IngredientConnection]
+    let ingredientPositions: [Int: CGRect]
+    let instructionPositions: [Int: CGRect]
+    let useCompactLayout: Bool
+    let animationConfig: AnimationConfig
+    
+    var body: some View {
+        Canvas { context, size in
+            for connection in connections {
+                guard let ingredientRect = ingredientPositions[connection.ingredientIndex],
+                      let instructionRect = instructionPositions[connection.instructionIndex] else { continue }
+                
+                let instructionColor = getInstructionColor(for: connection.instructionIndex + 1)
+                let opacity = Double(connection.confidence) * 0.7 + 0.3
+                
+                // Calculate connection points
+                let startPoint = CGPoint(
+                    x: instructionRect.maxX,
+                    y: instructionRect.midY
+                )
+                
+                let endPoint = CGPoint(
+                    x: ingredientRect.minX,
+                    y: ingredientRect.midY
+                )
+                
+                // Create smooth curve path
+                let path = createFlowPath(from: startPoint, to: endPoint, strength: connection.confidence)
+                
+                // Draw the connection with gradient and glow
+                context.stroke(path, with: .color(instructionColor.opacity(opacity)), style: StrokeStyle(
+                    lineWidth: useCompactLayout ? 2.0 : 3.0,
+                    lineCap: .round,
+                    lineJoin: .round
+                ))
+                
+                // Add subtle glow effect
+                context.stroke(path, with: .color(instructionColor.opacity(opacity * 0.3)), style: StrokeStyle(
+                    lineWidth: useCompactLayout ? 6.0 : 8.0,
+                    lineCap: .round,
+                    lineJoin: .round
+                ))
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(animationConfig.layoutAnimation, value: useCompactLayout)
+    }
+    
+    private func createFlowPath(from start: CGPoint, to end: CGPoint, strength: Float) -> Path {
+        var path = Path()
+        path.move(to: start)
+        
+        let distance = end.x - start.x
+        let verticalOffset = end.y - start.y
+        
+        // Create flowing curve with varying control points based on strength
+        let controlPoint1 = CGPoint(
+            x: start.x + distance * 0.3 * Double(strength + 0.5),
+            y: start.y + verticalOffset * 0.1
+        )
+        
+        let controlPoint2 = CGPoint(
+            x: end.x - distance * 0.3 * Double(strength + 0.5),
+            y: end.y - verticalOffset * 0.1
+        )
+        
+        path.addCurve(to: end, control1: controlPoint1, control2: controlPoint2)
+        return path
+    }
+    
+    private func getInstructionColor(for step: Int) -> Color {
+        let colors: [Color] = [.blue, .purple, .green, .orange, .red, .cyan, .mint, .pink, .indigo, .teal]
+        return colors[(step - 1) % colors.count]
     }
 }
 
@@ -734,6 +983,7 @@ struct InteractivePrototypeView: View {
                         isAnimating: layoutManager.isAnimating,
                         deviceType: deviceManager.deviceType,
                         animationConfig: animationConfig,
+                        recipe: recipe,
                         spacing: 24,
                         alignment: .top
                     ) {
@@ -741,7 +991,8 @@ struct InteractivePrototypeView: View {
                             ingredients: recipe.ingredients,
                             useCompactLayout: layoutManager.useCompactLayout,
                             deviceType: deviceManager.deviceType,
-                            animationConfig: animationConfig
+                            animationConfig: animationConfig,
+                            showConnectors: layoutManager.useHorizontalLayout && !layoutManager.useCompactLayout
                         )
                         .layoutPriority(1)
                         
@@ -749,7 +1000,8 @@ struct InteractivePrototypeView: View {
                             instructions: recipe.instructions,
                             useCompactLayout: layoutManager.useCompactLayout,
                             deviceType: deviceManager.deviceType,
-                            animationConfig: animationConfig
+                            animationConfig: animationConfig,
+                            showConnectors: layoutManager.useHorizontalLayout && !layoutManager.useCompactLayout
                         )
                         .layoutPriority(1)
                     }
@@ -837,6 +1089,7 @@ struct AnimatedRecipeWrapper: View {
                         isAnimating: layoutManager.isAnimating,
                         deviceType: deviceManager.deviceType,
                         animationConfig: animationConfig,
+                        recipe: recipe,
                         spacing: 24,
                         alignment: .top
                     ) {
@@ -844,7 +1097,8 @@ struct AnimatedRecipeWrapper: View {
                             ingredients: recipe.ingredients,
                             useCompactLayout: layoutManager.useCompactLayout,
                             deviceType: deviceManager.deviceType,
-                            animationConfig: animationConfig
+                            animationConfig: animationConfig,
+                            showConnectors: layoutManager.useHorizontalLayout && !layoutManager.useCompactLayout
                         )
                         .layoutPriority(1)
                         
@@ -852,7 +1106,8 @@ struct AnimatedRecipeWrapper: View {
                             instructions: recipe.instructions,
                             useCompactLayout: layoutManager.useCompactLayout,
                             deviceType: deviceManager.deviceType,
-                            animationConfig: animationConfig
+                            animationConfig: animationConfig,
+                            showConnectors: layoutManager.useHorizontalLayout && !layoutManager.useCompactLayout
                         )
                         .layoutPriority(1)
                     }
